@@ -67,6 +67,83 @@ HIBP Range API
    - For anything beyond local use, put it behind **TLS (HTTPS)**.
 - Debug mode can include Python stderr in responses; keep `PW_CHECKER_DEBUG` disabled in production.
 
+## Production HTTPS (important)
+
+If the browser shows **HTTPS crossed out** / “Not secure”, it usually means:
+
+- You are actually on `http://...` (no TLS)
+- The TLS certificate is invalid (expired, wrong hostname, missing chain)
+- A proxy/CDN is terminating TLS incorrectly
+
+This app also enforces HTTPS at the application layer for non-local hosts (see [index.php](index.php)).
+
+### Production (AlmaLinux + Webuzo Apache)
+
+Webuzo commonly runs its own Apache at:
+
+- `/usr/local/apps/apache2/bin/httpd`
+
+In that environment, `certbot --apache` can fail because it tries to restart the system Apache (`/usr/sbin/httpd`) while Webuzo’s Apache already owns ports `80/443`.
+
+Use **Certbot webroot mode** and keep Webuzo’s SSL PEM updated.
+
+#### 1) Find the site DocumentRoot
+
+```bash
+sudo /usr/local/apps/apache2/bin/httpd -S
+```
+
+Locate the `VirtualHost` for your domain and its `DocumentRoot` (often defined in `/usr/local/apps/apache2/etc/conf.d/webuzoVH.conf`).
+
+#### 2) Allow HTTP-01 challenge path
+
+Create/update the per-domain include (Webuzo includes this automatically):
+
+- `/var/webuzo-data/apache2/custom/domains/<your-domain>.conf`
+
+Example for `passwordcheck.fcjamison.com`:
+
+```apache
+Alias "/.well-known/acme-challenge/" "/home/frankjamison/public_html/fcjamison.com/projects/2025PasswordCheck/.well-known/acme-challenge/"
+
+<Directory "/home/frankjamison/public_html/fcjamison.com/projects/2025PasswordCheck/.well-known/acme-challenge/">
+      AllowOverride None
+      Options SymLinksIfOwnerMatch
+      Require all granted
+</Directory>
+
+<LocationMatch "^/\.well-known/acme-challenge/">
+      Require all granted
+</LocationMatch>
+```
+
+Then reload Webuzo Apache:
+
+```bash
+sudo /usr/local/apps/apache2/bin/httpd -t && sudo /usr/local/apps/apache2/bin/httpd -k graceful
+```
+
+#### 3) Issue the certificate (webroot)
+
+```bash
+sudo certbot certonly --webroot \
+   -w /path/to/your/DocumentRoot \
+   -d yourdomain.example \
+   -d www.yourdomain.example
+```
+
+#### 4) Make Webuzo’s SSL PEM use Let’s Encrypt
+
+If the Webuzo vhost references a generated combined PEM like:
+
+- `/var/webuzo/users/<user>/ssl/<domain>-combined.pem`
+
+You can replace its contents with Let’s Encrypt’s `fullchain.pem` + `privkey.pem` and reload Apache.
+
+#### 5) Keep it working on renew
+
+Use a Certbot deploy hook (`/etc/letsencrypt/renewal-hooks/deploy/`) to rebuild the combined PEM and gracefully reload Webuzo Apache.
+
 ## Repository structure
 ```
 .
@@ -74,6 +151,8 @@ HIBP Range API
 ├─ check_password.py      # HIBP Range API integration (k-Anonymity)
 ├─ css/
 │  └─ styles.css          # Styling
+├─ js/
+│  └─ app.js              # Frontend behavior (externalized for CSP)
 └─ README.md
 ```
 

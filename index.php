@@ -3,12 +3,57 @@
 header('X-PW-Checker-App: 2025PasswordCheckingUtility');
 header('X-PW-Checker-Version: 2026-01-05');
 
+function is_https_request(): bool
+{
+    if (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') {
+        return true;
+    }
+    if (!empty($_SERVER['SERVER_PORT']) && (int) $_SERVER['SERVER_PORT'] === 443) {
+        return true;
+    }
+    if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') {
+        return true;
+    }
+    return false;
+}
+
+function is_local_host(string $host): bool
+{
+    $host = strtolower($host);
+    return $host === 'localhost' || str_ends_with($host, '.localhost');
+}
+
 // Configure Python interpreter:
 // - Set env var PYTHON_BIN to an absolute path (recommended for production), e.g. /usr/bin/python3
 // - Optionally set env var PW_CHECKER_DEBUG=1 to return stderr in JSON (also logs to error_log)
 $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '';
 $isLocalRequest = in_array($remoteAddr, ['127.0.0.1', '::1'], true);
 $debug = (getenv('PW_CHECKER_DEBUG') === '1') || $isLocalRequest;
+
+$host = $_SERVER['HTTP_HOST'] ?? '';
+$allowHttp = (getenv('PW_ALLOW_HTTP') === '1');
+$isHttps = is_https_request();
+$isLocalHost = is_local_host($host);
+
+// Production safety: this tool accepts passwords; require HTTPS outside localhost.
+// Keep it configurable so local dev and certain health checks can still work.
+if (!$allowHttp && !$isHttps && !$isLocalRequest && !$isLocalHost) {
+    $uri = $_SERVER['REQUEST_URI'] ?? '/';
+    $location = 'https://' . $host . $uri;
+    header('Location: ' . $location, true, 308);
+    exit;
+}
+
+// Security headers (safe defaults). Only advertise HSTS when actually on HTTPS.
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: no-referrer');
+header('X-Frame-Options: DENY');
+header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
+if ($isHttps) {
+    header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+}
+// With JS moved out of the HTML, we can keep CSP reasonably strict.
+header("Content-Security-Policy: default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';");
 
 $python_bin = getenv('PYTHON_BIN');
 $python_args = [];
@@ -139,32 +184,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <pre id="result" class="is-empty" aria-live="polite"></pre>
         <p class="fineprint">Tip: use a unique, long passphrase. This tool does not store your password.</p>
     </div>
-    <script>
-        document.getElementById('pwForm').onsubmit = async function (e) {
-            e.preventDefault();
-            const form = e.target;
-            const formData = new FormData(form);
-            const resultEl = document.getElementById('result');
-            const buttonEl = document.getElementById('checkBtn');
-
-            resultEl.classList.remove('is-ok', 'is-error', 'is-empty');
-            resultEl.textContent = 'Checking…';
-            buttonEl.disabled = true;
-
-            try {
-                const res = await fetch(window.location.pathname, { method: 'POST', body: formData });
-                const data = await res.json();
-                const text = (data && (data.result || data.error)) ? (data.result || data.error) : 'Unexpected response.';
-                resultEl.textContent = text;
-                resultEl.classList.add(data && data.error ? 'is-error' : 'is-ok');
-            } catch (err) {
-                resultEl.textContent = 'Network error. Please try again.';
-                resultEl.classList.add('is-error');
-            } finally {
-                buttonEl.disabled = false;
-            }
-        };
-    </script>
+    <script src="js/app.js" defer></script>
 </body>
 
 </html>
